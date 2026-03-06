@@ -42,7 +42,7 @@ cp .env.example .env
 DISCORD_TOKEN=YOUR_DISCORD_BOT_TOKEN_HERE
 
 # Minecraft Server Configuration
-MINECRAFT_SERVER_IP=192.168.1.100
+MINECRAFT_SERVER_IP=127.0.0.1
 MINECRAFT_SERVER_PORT=25565
 
 # Discord Channel Configuration

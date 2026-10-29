@@ -8,7 +8,7 @@ import discord
 from discord.ext import tasks, commands
 import asyncio
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
 from mcstatus import JavaServer
 import logging
 import os
@@ -65,6 +65,7 @@ MINECRAFT_SERVER_PORT = int(os.getenv('MINECRAFT_SERVER_PORT', 25565))
 VOICE_CHANNEL_ID = int(os.getenv('VOICE_CHANNEL_ID', 0))
 TEXT_CHANNEL_ID = int(os.getenv('TEXT_CHANNEL_ID', 0))
 GUILD_ID = int(os.getenv('GUILD_ID', 0))
+SERVER_DISPLAY_NAME = os.getenv('SERVER_DISPLAY_NAME', 'Minecraft Server').strip() or 'Minecraft Server'
 
 # Polling and update settings
 LAN_POLL_INTERVAL = int(os.getenv('LAN_POLL_INTERVAL', 5))
@@ -252,6 +253,7 @@ class UptimeGolemBot(commands.Cog):
         self.last_voice_name = "INITIAL"
         self.last_player_list = []
         self.last_online_status = None
+        self.last_text_status = None
         self.current_status = {'online': False, 'current_players': 0, 'max_players': 0}
         self.first_status_update = False  # Flag to ensure LAN poll runs first
         
@@ -311,12 +313,14 @@ class UptimeGolemBot(commands.Cog):
             status_text = await self._format_voice_channel_name()
             new_player_list = sorted(self.current_status.get('player_list', []))
             status_changed = self.current_status.get('online') != self.last_online_status
+            text_status = (status_text, tuple(new_player_list))
+            text_needs_update = text_status != self.last_text_status
             
             # Detect if status or players changed
             voice_changed = status_text != self.last_voice_name
             players_changed = new_player_list != self.last_player_list
             
-            if not (voice_changed or players_changed or status_changed):
+            if not (voice_changed or text_needs_update):
                 logger.debug("No status or player list change detected — skipping Discord update")
                 return
 
@@ -340,7 +344,6 @@ class UptimeGolemBot(commands.Cog):
             
             # Check if text message update is needed and allowed
             # Text updates when players change, online/offline status changes, or voice status changes (max_players changes)
-            text_needs_update = players_changed or status_changed or voice_changed
             text_can_update = text_needs_update and await self.text_rate_limiter.should_update()
 
             # Update voice channel if allowed
@@ -366,6 +369,7 @@ class UptimeGolemBot(commands.Cog):
                     logger.info(f"Text message update: Updated with {len(new_player_list)} players")
                     self.last_player_list = new_player_list
                     self.last_online_status = self.current_status.get('online')
+                    self.last_text_status = text_status
                 except discord.errors.HTTPException as e:
                     if getattr(e, 'status', None) == 429:  # Rate limited
                         logger.warning("Text message update: Rate limited (429) — activating throttle")
@@ -407,54 +411,64 @@ class UptimeGolemBot(commands.Cog):
             status = "offline"
             return f"{emoji} {status}"
 
-    async def _update_player_list_message(self, text_channel: discord.TextChannel, player_list: list):
-        """
-        Update or create player list message in text channel.
-        Displays all currently online players.
-        
-        Args:
-            text_channel: Discord text channel to post message
-            player_list: List of online player names
-        """
-        # Format player list message
-        if self.current_status['online']:
-            state = self._server_state_label()
-            current = self.current_status.get('current_players', 0)
-            max_p = self.current_status.get('max_players', 0)
-            
-            # Hide player count when asleep, similar to voice channel
-            if state == "asleep":
-                state_suffix = " (asleep)"
-                player_count_str = ""
-            else:
-                state_suffix = f" ({state})" if state else ""
-                player_count_str = f" ({current}/{max_p})"
-            
-            if player_list:
-                player_names = "\n".join([f"• {player}" for player in player_list])
-                embed = discord.Embed(
-                    title=f"🟢 Online Players{state_suffix}{player_count_str}",
-                    description=player_names,
-                    color=discord.Color.green(),
-                    timestamp=datetime.now()
-                )
-                embed.set_footer(text="UptimeGolem | Minecraft Server Monitor")
-            else:
-                embed = discord.Embed(
-                    title=f"🟢 Server Online{state_suffix}{player_count_str}",
-                    description="No players online currently",
-                    color=discord.Color.green(),
-                    timestamp=datetime.now()
-                )
-                embed.set_footer(text="UptimeGolem | Minecraft Server Monitor")
+    def _build_status_embed(self, player_list: list) -> discord.Embed:
+        """Build a compact status card using the existing server-list ping data."""
+        online = self.current_status.get('online', False)
+        asleep = online and self._server_state_label() == "asleep"
+        if not online:
+            title, color = "🔴 OFFLINE", discord.Color.red()
+            summary = "Der Server ist aktuell nicht erreichbar."
+        elif asleep:
+            title, color = "🌙 RUHEMODUS", discord.Color.gold()
+            summary = "Der Server ruht gerade. Versuche beizutreten, um ihn aufzuwecken."
         else:
-            embed = discord.Embed(
-                title="🔴 Server Offline",
-                description="The Minecraft server is currently offline",
-                color=discord.Color.red(),
-                timestamp=datetime.now()
-            )
-            embed.set_footer(text="UptimeGolem | Minecraft Server Monitor")
+            title, color = "🟢 ONLINE", discord.Color.green()
+            summary = "Der Server ist erreichbar. Viel Spaß beim Spielen!"
+
+        embed = discord.Embed(
+            title=title,
+            description=summary,
+            color=color,
+            timestamp=datetime.now(timezone.utc),
+        )
+        embed.set_author(name=SERVER_DISPLAY_NAME[:256])
+
+        if online and not asleep:
+            current = max(0, self.current_status.get('current_players', 0))
+            capacity = max(0, self.current_status.get('max_players', 0))
+            if capacity:
+                filled = min(10, round(current / capacity * 10))
+                bar = "▰" * filled + "▱" * (10 - filled)
+                occupancy = f"**{current} / {capacity}** online\n{bar}"
+            else:
+                occupancy = f"**{current}** online"
+            embed.add_field(name="👥 Spieler", value=occupancy, inline=False)
+
+            # Server-list ping may return only a sample (or no names at all).
+            names = sorted(set(str(name) for name in player_list if name))[:current]
+            lines = []
+            for name in names:
+                safe_name = discord.utils.escape_markdown(discord.utils.escape_mentions(name))
+                line = f"• {safe_name}"
+                if len("\n".join(lines + [line])) > 900:
+                    break
+                lines.append(line)
+            if current == 0:
+                roster = "Noch niemand online — sei der Erste!"
+            elif not lines:
+                roster = "Der Server übermittelt aktuell keine Spielernamen."
+            else:
+                roster = "\n".join(lines)
+                if current > len(lines):
+                    roster += f"\n*+ {current - len(lines)} weitere Spieler (Namen nicht angezeigt)*"
+            embed.add_field(name="🎮 Gerade dabei", value=roster, inline=False)
+
+        embed.set_footer(text="UptimeGolem • Status aktualisiert")
+        return embed
+
+    async def _update_player_list_message(self, text_channel: discord.TextChannel, player_list: list):
+        """Edit the existing status card, or create it if none was found."""
+        embed = self._build_status_embed(player_list)
 
         # Find and update existing message or create new one
         try:
@@ -469,6 +483,7 @@ class UptimeGolemBot(commands.Cog):
             await text_channel.send(embed=embed)
         except Exception as e:
             logger.error(f"Text message update: Failed to update/send message: {e}")
+            raise
 
     def _server_state_label(self) -> str:
         """Return server state label based on max player count."""
@@ -528,3 +543,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

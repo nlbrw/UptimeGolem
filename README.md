@@ -8,7 +8,7 @@ A Discord bot that monitors Minecraft server status and displays it in real-time
 - 🎤 **Voice Channel Updates**: Displays server status in voice channel name
   - 🟢 online (current/max players)
   - 🔴 offline
-- 💬 **Player List Messages**: Shows currently online players in text channel
+- 💬 **Status Card**: Prominent online / asleep / offline state, player count with occupancy bar, and a separate player roster
 - 🚦 **Adaptive Rate Limiting**: 
   - Fast updates when under 50% rate limit usage
   - Automatic throttling when approaching Discord API limits
@@ -141,3 +141,28 @@ All logs are printed to console with format: `[HH:MM:SS] - Logger - Level - Mess
 - Confirm `TEXT_CHANNEL_ID` is correct
 - Check bot has permission to send messages
 - Ensure "Server List Ping" is enabled on Minecraft server
+
+
+## Text channel status card
+
+The German-language card uses a prominent status heading and a matching accent:
+
+- **🟢 ONLINE**: player count, a ten-segment occupancy bar, and a separate roster.
+- **🌙 RUHEMODUS**: explains how to wake the server; hides placeholder player counts.
+- **🔴 OFFLINE**: clearly indicates that the server cannot be reached.
+
+Set `SERVER_DISPLAY_NAME=Krakenboys SMP` in `.env` to customize the card's name
+(default: `Minecraft Server`). No new dependencies or Discord permissions are required.
+The existing heuristic still treats a reported maximum of 20 players as sleep mode.
+
+Names are escaped and bounded to fit Discord's field limits. A partial or missing
+server player sample is labeled accordingly instead of claiming nobody is online.
+The footer timestamp means **status card last updated**, not last server poll;
+unchanged cards are not refreshed just to change the timestamp. Text updates track
+their own successful state independently of the slower voice-channel renames.
+
+The bot edits its existing embed (recognized by the `UptimeGolem` footer among the
+last ten channel messages). Keep the status channel dedicated to the bot for reliable
+rediscovery after restarts. Restart the bot after updating the code.
+
+Run the offline checks with `python -m unittest discover -s tests -v`.
